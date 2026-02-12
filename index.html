@@ -75,10 +75,10 @@ for($i=0; $i -lt $Count; $i++){
            elseif ($risk -eq "中") { "料金見直し・他社比較の示唆（ダミー）" }
            else { "顧客からの解約に関する発言なし（ダミー）" }
 
-  $soft = Clamp((2 + $rng.Next(0,4)), 1, 5)
-  $hb   = Clamp((2 + $rng.Next(0,4)), 1, 5)
-  $hp   = Clamp((1 + $rng.Next(0,5)), 1, 5)
-  $prop = Clamp((2 + $rng.Next(0,4)), 1, 5)
+  $soft = Clamp (2 + $rng.Next(0,4)) 1 5
+　$hb   = Clamp (2 + $rng.Next(0,4)) 1 5
+　$hp   = Clamp (1 + $rng.Next(0,5)) 1 5
+　$prop = Clamp (2 + $rng.Next(0,4)) 1 5
 
   $trigger = switch($purpose){
     "障害/不具合（TV/NET/電話）" { Pick @("インターネットが繋がらない","テレビが映らない","速度が遅い","電話が繋がらない") }
