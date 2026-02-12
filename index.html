@@ -1,987 +1,190 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>VOC分析ダッシュボード（愛媛ケーブルテレビ）</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+param(
+  [int]$Count = 3000,
+  [string]$OutDir = ".\data",
+  [int]$Seed = 42
+)
 
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+$ErrorActionPreference = "Stop"
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$rng = [Random]::new($Seed)
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-      background: #f5f7fa;
-      min-height: 100vh;
-      padding: 0;
-      color: #333;
-    }
+# Operators: removed "不明" and "Nishinetei Yuiki Hara"
+# No weighting: each appears exactly once in the candidate list (uniform selection)
+$Operators = @(
+  "岩里",
+  "篠原",
+  "松本",
+  "小室",
+  "角屋",
+  "屋下",
+  "いわさ",
+  "武田",
+  "川畑",
+  "中村",
+  "山下",
+  "岩田",
+  "岩沙"
+)
 
-    .container { max-width: 100%; margin: 0; padding: 0; }
+# Ehime CATV context categories
+$Purposes = @(
+  "障害/不具合（TV/NET/電話）",
+  "機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）",
+  "料金/請求",
+  "契約変更",
+  "解約",
+  "引越し",
+  "工事/訪問手配",
+  "営業案内",
+  "サービス案内",
+  "その他"
+)
 
-    .header {
-      background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
-      padding: 24px 40px;
-      border-radius: 0;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-      margin-bottom: 0;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
+$Header = @(
+  "通話日時","オペレーター名","顧客属性(推定)","契約状況(推測)","入電目的(大分類)","具体的課題(Trigger)","解決プロセス(Action)",
+  "ライフイベント・予兆","解約リスク判定","解約リスク判定_詳細",
+  "評価_Soft_点数","評価_Soft_内容","評価_Soft_根拠",
+  "評価_Hard基本_点数","評価_Hard基本_内容","評価_Hard基本_根拠",
+  "評価_Hard専門_点数","評価_Hard専門_内容","評価_Hard専門_根拠",
+  "評価_判断提案_点数","評価_判断提案_内容","評価_判断提案_根拠",
+  "会話要約","会話全文(整形済)"
+)
 
-    .header h1 {
-      font-size: 24px;
-      color: #ffffff;
-      font-weight: 600;
-      letter-spacing: 0.5px;
-    }
+$start = Get-Date "2023-01-01"
+$end   = Get-Date "2023-12-31"
 
-    .header-actions { display: flex; gap: 10px; }
+function Pick($a){ $a[$rng.Next(0, $a.Count)] }
+function D([datetime]$d){ $d.ToString("yyyy年M月d日") }
+function Clamp([int]$x, [int]$min, [int]$max){ [Math]::Max($min, [Math]::Min($max, $x)) }
 
-    .nav-tabs {
-      display: flex;
-      background: white;
-      border-radius: 0;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-      margin-bottom: 0;
-      overflow: hidden;
-      border-bottom: 1px solid #e1e8ed;
-    }
+$rows = New-Object System.Collections.Generic.List[object]
 
-    .nav-tab {
-      flex: 1;
-      padding: 15px 20px;
-      background: white;
-      border: none;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      font-size: 14px;
-      font-weight: 500;
-      color: #666;
-      border-bottom: 3px solid transparent;
-    }
+for($i=0; $i -lt $Count; $i++){
+  $dt = $start.AddDays($rng.Next(0, ($end-$start).Days + 1))
+  $op = Pick $Operators
+  $purpose = Pick $Purposes
 
-    .nav-tab.active {
-      background: #f8f9ff;
-      color: #667eea;
-      border-bottom-color: #667eea;
-    }
+  $contract = if ($purpose -in @("営業案内","サービス案内")) { "既加入者" } else { Pick @("既加入者","既加入者","不明") }
+  $attr = Pick @("既加入者","不明","不明")
 
-    .nav-tab:hover:not(.active) {
-      background: #f8f9fa;
-      color: #333;
-    }
+  $risk = if ($purpose -eq "解約") { "高" }
+          elseif ($purpose -eq "料金/請求" -and $rng.Next(0,100) -lt 25) { "中" }
+          else { "低" }
 
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
+  $riskD = if ($risk -eq "高") { "顧客から解約意向の発言あり（ダミー）" }
+           elseif ($risk -eq "中") { "料金見直し・他社比較の示唆（ダミー）" }
+           else { "顧客からの解約に関する発言なし（ダミー）" }
 
-    .btn {
-      padding: 10px 20px;
-      border: none;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      text-decoration: none;
-    }
+  $soft = Clamp((2 + $rng.Next(0,4)), 1, 5)
+  $hb   = Clamp((2 + $rng.Next(0,4)), 1, 5)
+  $hp   = Clamp((1 + $rng.Next(0,5)), 1, 5)
+  $prop = Clamp((2 + $rng.Next(0,4)), 1, 5)
 
-    .btn-primary { background: #3498db; color: white; }
-    .btn-primary:hover { background: #2980b9; box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3); }
-    .btn-secondary { background: rgba(255, 255, 255, 0.2); color: white; border: 1px solid rgba(255, 255, 255, 0.3); }
-    .btn-secondary:hover { background: rgba(255, 255, 255, 0.3); }
-
-    .loading {
-      text-align: center;
-      padding: 40px;
-      background: white;
-      border-radius: 15px;
-      margin: 20px 40px;
-    }
-    .spinner {
-      border: 4px solid #f3f3f3;
-      border-top: 4px solid #667eea;
-      border-radius: 50%;
-      width: 40px;
-      height: 40px;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 15px;
-    }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-    .alert {
-      padding: 15px 20px;
-      border-radius: 10px;
-      margin: 20px 40px;
-      font-weight: 500;
-      display:none;
-    }
-    .alert.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-    .alert.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-
-    .kpi-section {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 20px;
-      margin: 30px 40px;
-    }
-    .kpi-card {
-      background: white;
-      padding: 24px;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-      border: 1px solid #e1e8ed;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      transition: all 0.2s ease;
-    }
-    .kpi-card:hover { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); border-color: #3498db; }
-    .kpi-icon { font-size: 40px; line-height: 1; }
-    .kpi-content { flex: 1; }
-    .kpi-label { font-size: 13px; color: #7f8c8d; margin-bottom: 6px; font-weight: 500; }
-    .kpi-value { font-size: 28px; font-weight: 700; color: #2c3e50; }
-
-    .charts-section {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-      gap: 20px;
-      margin: 30px 40px;
-    }
-    .chart-container {
-      background: white;
-      padding: 24px;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-      border: 1px solid #e1e8ed;
-    }
-    .chart-container h2 {
-      font-size: 16px;
-      margin-bottom: 20px;
-      color: #2c3e50;
-      font-weight: 600;
-    }
-    .chart-full-width { grid-column: 1 / -1; }
-
-    .filters-section, .voc-list-section, .operators-section {
-      background: white;
-      padding: 24px;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-      border: 1px solid #e1e8ed;
-      margin: 30px 40px;
-    }
-    .filters-section h2, .voc-list-section h2, .operators-section h2 {
-      font-size: 16px;
-      margin-bottom: 20px;
-      color: #2c3e50;
-      font-weight: 600;
-    }
-    .filters { display:flex; flex-wrap:wrap; gap:15px; align-items:flex-end; }
-    .filter-group { display:flex; flex-direction:column; gap:8px; }
-    .filter-group label { font-size: 14px; font-weight: 600; color: #666; }
-    .filter-select {
-      padding: 10px 15px;
-      border: 2px solid #e0e0e0;
-      border-radius: 8px;
-      font-size: 14px;
-      min-width: 220px;
-      cursor: pointer;
-      transition: border-color 0.3s ease;
-      background: white;
-    }
-    .filter-select:focus { outline:none; border-color:#667eea; }
-
-    .voc-list { display:flex; flex-direction:column; gap:15px; }
-    .voc-item {
-      padding: 20px;
-      border: 2px solid #f0f0f0;
-      border-radius: 10px;
-      cursor: pointer;
-      transition: all 0.3s ease;
-    }
-    .voc-item:hover {
-      border-color: #667eea;
-      background: #f8f9ff;
-      transform: translateX(5px);
-    }
-    .voc-item-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:12px; }
-    .voc-item-title { font-size: 16px; font-weight: 600; color: #333; }
-    .voc-item-badges { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-    .badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-    .badge.category { background: #e3f2fd; color: #1976d2; }
-    .badge.risk-low { background: #d1ecf1; color: #0c5460; }
-    .badge.risk-mid { background: #fff3cd; color: #856404; }
-    .badge.risk-high { background: #f8d7da; color: #721c24; }
-
-    .voc-item-meta { display:flex; gap:20px; font-size:13px; color:#666; flex-wrap:wrap; }
-    .voc-item-keywords { margin-top:10px; font-size:13px; color:#667eea; }
-
-    .operators-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 20px;
-    }
-    .operator-card {
-      padding: 20px;
-      border: 2px solid #f0f0f0;
-      border-radius: 10px;
-      cursor: pointer;
-      transition: all 0.3s ease;
-    }
-    .operator-card:hover {
-      border-color: #667eea;
-      background: #f8f9ff;
-      transform: translateY(-2px);
-    }
-    .operator-card h3 { font-size: 18px; font-weight: 600; color: #333; margin-bottom: 10px; }
-    .operator-stats { display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; margin-bottom: 15px; }
-    .operator-stat { text-align:center; }
-    .operator-stat-label { font-size:12px; color:#666; margin-bottom:5px; }
-    .operator-stat-value { font-size:20px; font-weight:700; color:#2c3e50; }
-    .operator-score-bar { background:#e0e0e0; border-radius:10px; height:20px; margin:10px 0; overflow:hidden; }
-    .operator-score-fill { height:100%; background: linear-gradient(90deg, #667eea, #4BC0C0); transition: width 0.3s ease; }
-
-    .modal {
-      position: fixed;
-      z-index: 1000;
-      left: 0; top: 0;
-      width: 100%; height: 100%;
-      overflow: auto;
-      background-color: rgba(0, 0, 0, 0.6);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .modal-content {
-      background-color: white;
-      margin: auto;
-      padding: 30px;
-      border-radius: 15px;
-      width: 90%;
-      max-width: 900px;
-      max-height: 90vh;
-      overflow-y: auto;
-      position: relative;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-    }
-    .close {
-      position: absolute;
-      right: 20px; top: 20px;
-      font-size: 32px;
-      font-weight: bold;
-      color: #aaa;
-      cursor: pointer;
-      line-height: 1;
-    }
-    .close:hover { color: #333; }
-    #modalTitle { font-size: 22px; margin-bottom: 16px; color: #667eea; }
-    .modal-info {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 15px;
-      margin-bottom: 20px;
-      padding: 15px;
-      background: #f8f9ff;
-      border-radius: 10px;
-    }
-    .modal-info-label { font-size: 12px; color:#666; margin-bottom:5px; font-weight:600; }
-    .modal-info-value { font-size: 16px; color:#333; font-weight:500; }
-    .conversation {
-      background: #f8f9fa;
-      padding: 20px;
-      border-radius: 10px;
-      white-space: pre-wrap;
-      font-size: 14px;
-      line-height: 1.8;
-      color: #333;
-    }
-
-    @media (max-width: 768px) {
-      .header { flex-direction: column; gap: 20px; text-align: center; padding: 20px; }
-      .header-actions { width: 100%; justify-content: center; }
-      .nav-tabs { flex-direction: column; }
-      .nav-tab { border-bottom: 1px solid #eee; border-right: none; }
-      .kpi-section { grid-template-columns: 1fr; margin: 20px; }
-      .charts-section { grid-template-columns: 1fr; margin: 20px; }
-      .filters-section, .voc-list-section, .operators-section { margin: 20px; }
-      .filters { flex-direction: column; align-items: stretch; }
-      .filter-select { width: 100%; min-width: unset; }
-      .modal-content { width: 95%; padding: 20px; }
-      .operators-grid { grid-template-columns: 1fr; }
-    }
-
-    .empty-state { text-align:center; padding: 60px 20px; color:#999; }
-    .empty-state-text { font-size: 18px; margin-bottom: 10px; }
-    .empty-state-hint { font-size: 14px; color:#ccc; }
-  </style>
-</head>
-
-<body>
-<div class="container">
-  <header class="header">
-    <h1>📊 VOC分析ダッシュボード（愛媛ケーブルテレビ）</h1>
-    <div class="header-actions">
-      <button class="btn btn-primary" onclick="showTab('operator', event)">👥 オペレーター評価</button>
-      <button class="btn btn-primary" onclick="showTab('dashboard', event)">📊 ダッシュボード</button>
-      <button id="refreshBtn" class="btn btn-secondary">🔄 更新</button>
-    </div>
-  </header>
-
-  <div class="nav-tabs">
-    <button class="nav-tab active" onclick="showTab('dashboard', event)">📊 ダッシュボード</button>
-    <button class="nav-tab" onclick="showTab('voc-management', event)">📋 VOC管理</button>
-    <button class="nav-tab" onclick="showTab('operator', event)">👥 オペレーター評価</button>
-  </div>
-
-  <div id="loading" class="loading" style="display:none;">
-    <div class="spinner"></div>
-    <p>読み込み中...</p>
-  </div>
-
-  <div id="alert" class="alert"></div>
-
-  <!-- Dashboard Tab -->
-  <div id="dashboard" class="tab-content active">
-    <section class="kpi-section">
-      <div class="kpi-card">
-        <div class="kpi-icon">📝</div>
-        <div class="kpi-content">
-          <div class="kpi-label">総VOC件数</div>
-          <div class="kpi-value" id="totalRecords">-</div>
-        </div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">⚠️</div>
-        <div class="kpi-content">
-          <div class="kpi-label">解約リスク（高）割合</div>
-          <div class="kpi-value" id="highRiskRate">-</div>
-        </div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">⭐</div>
-        <div class="kpi-content">
-          <div class="kpi-label">平均スコア（4項目）</div>
-          <div class="kpi-value" id="avgScoreAll">-</div>
-        </div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">👤</div>
-        <div class="kpi-content">
-          <div class="kpi-label">ユニークOP数</div>
-          <div class="kpi-value" id="uniqueOperators">-</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="charts-section">
-      <div class="chart-container">
-        <h2>📊 入電目的(大分類) 別件数</h2>
-        <canvas id="categoryChart"></canvas>
-      </div>
-      <div class="chart-container">
-        <h2>🔑 頻出キーワード TOP10（会話要約から簡易抽出）</h2>
-        <canvas id="keywordChart"></canvas>
-      </div>
-      <div class="chart-container chart-full-width">
-        <h2>📈 解約リスク分布</h2>
-        <canvas id="riskChart"></canvas>
-      </div>
-    </section>
-
-    <section class="filters-section">
-      <h2>🔍 フィルター</h2>
-      <div class="filters">
-        <div class="filter-group">
-          <label for="categoryFilter">入電目的(大分類)</label>
-          <select id="categoryFilter" class="filter-select">
-            <option value="">すべて</option>
-          </select>
-        </div>
-        <div class="filter-group">
-          <label for="riskFilter">解約リスク</label>
-          <select id="riskFilter" class="filter-select">
-            <option value="">すべて</option>
-            <option value="低">低</option>
-            <option value="中">中</option>
-            <option value="高">高</option>
-          </select>
-        </div>
-        <div class="filter-group">
-          <label for="operatorFilter">オペレーター名</label>
-          <select id="operatorFilter" class="filter-select">
-            <option value="">すべて</option>
-          </select>
-        </div>
-        <button id="applyFilters" class="btn btn-primary">適用</button>
-        <button id="clearFilters" class="btn btn-secondary" style="color:#2c3e50;background:white;border:1px solid #e1e8ed;">クリア</button>
-      </div>
-    </section>
-
-    <section class="voc-list-section">
-      <h2>📋 VOC一覧（先頭50件表示）</h2>
-      <div id="vocList" class="voc-list"></div>
-    </section>
-  </div>
-
-  <!-- VOC Management Tab -->
-  <div id="voc-management" class="tab-content">
-    <section class="filters-section">
-      <h2>📥 データ</h2>
-      <p style="font-size:14px;color:#666;line-height:1.6;">
-        このデモは <code>data/voc.json</code> を読み込み、カテゴリ・リスク・オペレーター別に集計します。<br/>
-        生成スクリプト: <code>generate_dummy_min.ps1</code>
-      </p>
-      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;">
-        <button class="btn btn-primary" id="downloadJson">📋 voc.json を開く</button>
-        <button class="btn btn-primary" id="downloadTsv">📊 voc.tsv を開く</button>
-      </div>
-    </section>
-
-    <section class="voc-list-section">
-      <h2>📋 VOC一覧（先頭100件）</h2>
-      <div id="vocList2" class="voc-list"></div>
-    </section>
-  </div>
-
-  <!-- Operator Tab -->
-  <div id="operator" class="tab-content">
-    <section class="kpi-section">
-      <div class="kpi-card">
-        <div class="kpi-icon">👤</div>
-        <div class="kpi-content">
-          <div class="kpi-label">評価対象オペレーター</div>
-          <div class="kpi-value" id="totalOperators">-</div>
-        </div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">📁</div>
-        <div class="kpi-content">
-          <div class="kpi-label">総ケース数</div>
-          <div class="kpi-value" id="totalCases">-</div>
-        </div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">⭐</div>
-        <div class="kpi-content">
-          <div class="kpi-label">平均スコア（全OP）</div>
-          <div class="kpi-value" id="avgScoreOps">-</div>
-        </div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">🧾</div>
-        <div class="kpi-content">
-          <div class="kpi-label">平均応対スコア（Soft）</div>
-          <div class="kpi-value" id="avgSoftOps">-</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="operators-section">
-      <h2>👥 オペレーター一覧</h2>
-      <div id="operatorsList" class="operators-grid"></div>
-    </section>
-
-    <section class="charts-section">
-      <div class="chart-container chart-full-width">
-        <h2>📊 オペレーター別 平均スコア</h2>
-        <canvas id="operatorScoreChart"></canvas>
-      </div>
-    </section>
-  </div>
-
-  <!-- Modal -->
-  <div id="vocModal" class="modal" style="display:none;">
-    <div class="modal-content">
-      <span class="close" onclick="closeModal()">&times;</span>
-      <h2 id="modalTitle">VOC詳細</h2>
-      <div id="modalBody"></div>
-    </div>
-  </div>
-</div>
-
-<script>
-  // -------- State --------
-  let ALL = [];
-  let FILTERED = [];
-  let charts = { category:null, keyword:null, risk:null, opScore:null };
-
-  const MAX_LIST = 50;
-  const MAX_LIST2 = 100;
-
-  // -------- Utilities --------
-  function showLoading(show){
-    document.getElementById('loading').style.display = show ? 'block' : 'none';
+  $trigger = switch($purpose){
+    "障害/不具合（TV/NET/電話）" { Pick @("インターネットが繋がらない","テレビが映らない","速度が遅い","電話が繋がらない") }
+    "機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）" { Pick @("Wi‑Fiが不安定","ルータ設定の相談","STB操作案内","リモコン操作案内","メール設定の相談") }
+    "料金/請求" { Pick @("請求金額の内訳確認","料金見直しの相談","支払い方法の確認") }
+    "契約変更" { Pick @("プラン/オプション変更の相談","名義変更の相談","契約内容の確認") }
+    "解約" { Pick @("解約手続きの相談","解約に伴う撤去の確認") }
+    "引越し" { Pick @("引越しに伴う移転手続き","移転工事日の相談") }
+    "工事/訪問手配" { Pick @("訪問サポートの依頼","宅内確認の訪問希望") }
+    "営業案内" { "新プランの案内と訪問提案" }
+    "サービス案内" { "サービスのご案内のための連絡" }
+    default { "その他問い合わせ" }
   }
 
-  function showAlert(type, msg){
-    const el = document.getElementById('alert');
-    el.className = 'alert ' + type;
-    el.textContent = msg;
-    el.style.display = 'block';
-    setTimeout(()=> el.style.display='none', 3500);
+  $action = switch($purpose){
+    "障害/不具合（TV/NET/電話）" { "要件確認→機器再起動案内→ランプ/配線確認→復旧確認" }
+    "機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）" { "要件確認→設定/操作案内→改善策提示→終了" }
+    "料金/請求" { "契約内訳確認→料金説明→次回請求の見込み案内" }
+    "契約変更" { "要望確認→注意事項案内→手続き方法案内" }
+    "解約" { "理由ヒアリング→違約金/撤去説明→手続き案内" }
+    "引越し" { "住所/希望日確認→工事可否案内→手続き案内" }
+    "工事/訪問手配" { "症状確認→訪問可否→希望日調整→注意事項案内" }
+    "営業案内" { "案内→料金目安提示→訪問提案→検討/辞退で終話" }
+    "サービス案内" { "案内→許諾確認→短時間説明→終了" }
+    default { "要件確認→案内→終了" }
   }
 
-  function safeNum(x){
-    const n = Number(x);
-    return Number.isFinite(n) ? n : null;
+  $life = switch($purpose){
+    "引越し" { "引越し予定" }
+    "解約" { "費用見直し/転居の可能性" }
+    "料金/請求" { "家計見直し" }
+    "営業案内" { "通信費の見直し" }
+    default { "特になし" }
   }
 
-  function avg(nums){
-    const xs = nums.filter(n => Number.isFinite(n));
-    if (!xs.length) return null;
-    return xs.reduce((a,b)=>a+b,0) / xs.length;
+  # Dummy evidence snippets (for dashboard demo)
+  $softText = if ($soft -ge 4) { "丁寧な対応と説明（ダミー）" } elseif ($soft -eq 3) { "丁寧だが柔軟性が不足（ダミー）" } else { "傾聴・配慮が不足（ダミー）" }
+  $hbText   = if ($hb -ge 4) { "要件整理と案内が明確（ダミー）" } elseif ($hb -eq 3) { "基本案内はできているが深掘り不足（ダミー）" } else { "確認不足で案内が不十分（ダミー）" }
+  $hpText   = if ($hp -ge 4) { "切り分け/手続きの専門案内が適切（ダミー）" } elseif ($hp -eq 3) { "基本知識はあるが最適化不足（ダミー）" } else { "専門的な案内が不足（ダミー）" }
+  $propText = if ($prop -ge 4) { "次アクション提示が適切（ダミー）" } elseif ($prop -eq 3) { "判断は標準だが改善余地（ダミー）" } else { "提案・判断が弱い（ダミー）" }
+
+  $softEv = "OP: お世話になります。ありがとうございます。（ダミー）"
+  $hbEv   = "OP: 要件を確認します。（ダミー）"
+  $hpEv   = "OP: 手順をご案内します。（ダミー）"
+  $propEv = "OP: 次の対応をご案内します。（ダミー）"
+
+  $summary = "オペレーターの$opが$contractの顧客に対して「$trigger」の要件で対応。$action。解約リスクは$risk。"
+
+  $conv = @(
+    "OP: お世話になります。愛媛ケーブルテレビの$opです。",
+    "CU: はい。",
+    "OP: 本日は「$trigger」の件でご案内します。",
+    "CU: はい。",
+    "OP: $action。",
+    "CU: わかりました。"
+  ) -join " "
+
+  $o = [ordered]@{}
+  $o["通話日時"] = D $dt
+  $o["オペレーター名"] = $op
+  $o["顧客属性(推定)"] = $attr
+  $o["契約状況(推測)"] = $contract
+  $o["入電目的(大分類)"] = $purpose
+  $o["具体的課題(Trigger)"] = $trigger
+  $o["解決プロセス(Action)"] = if ($purpose -in @("営業案内","サービス案内")) { "電話完結" } else { $action }
+  $o["ライフイベント・予兆"] = $life
+  $o["解約リスク判定"] = $risk
+  $o["解約リスク判定_詳細"] = $riskD
+
+  $o["評価_Soft_点数"] = $soft
+  $o["評価_Soft_内容"] = $softText
+  $o["評価_Soft_根拠"] = $softEv
+
+  $o["評価_Hard基本_点数"] = $hb
+  $o["評価_Hard基本_内容"] = $hbText
+  $o["評価_Hard基本_根拠"] = $hbEv
+
+  $o["評価_Hard専門_点数"] = $hp
+  $o["評価_Hard専門_内容"] = $hpText
+  $o["評価_Hard専門_根拠"] = $hpEv
+
+  $o["評価_判断提案_点数"] = $prop
+  $o["評価_判断提案_内容"] = $propText
+  $o["評価_判断提案_根拠"] = $propEv
+
+  $o["会話要約"] = $summary
+  $o["会話全文(整形済)"] = $conv
+
+  $rows.Add([pscustomobject]$o) | Out-Null
+}
+
+# TSV
+$tsv = Join-Path $OutDir "voc.tsv"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$sb = New-Object System.Text.StringBuilder
+[void]$sb.AppendLine(($Header -join "`t"))
+foreach($r in $rows){
+  $vals = foreach($h in $Header){
+    $v = [string]$r.$h
+    $v.Replace("`t"," ").Replace("`r"," ").Replace("`n"," ")
   }
+  [void]$sb.AppendLine(($vals -join "`t"))
+}
+[IO.File]::WriteAllText($tsv, $sb.ToString(), $utf8NoBom)
 
-  function fmt(n, digits=1){
-    if (n === null || n === undefined) return '-';
-    if (!Number.isFinite(n)) return '-';
-    return n.toFixed(digits);
-  }
+# JSON
+$rows | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutDir "voc.json") -Encoding UTF8
 
-  function riskBadge(r){
-    if (r === '高') return 'risk-high';
-    if (r === '中') return 'risk-mid';
-    return 'risk-low';
-  }
-
-  function tokenize(text){
-    if (!text) return [];
-    // very simple keyword extraction: split by spaces and punctuation, keep japanese chunks too
-    return text
-      .replace(/[0-9]+/g,' ')
-      .replace(/[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g,' ')
-      .replace(/\s+/g,' ')
-      .trim()
-      .split(' ')
-      .filter(t => t.length >= 2 && t.length <= 20);
-  }
-
-  function buildKeywordsTop(records, topN=10){
-    const map = new Map();
-    for (const r of records){
-      const toks = tokenize(r["会話要約"] || '');
-      for (const t of toks){
-        map.set(t, (map.get(t)||0) + 1);
-      }
-    }
-    return [...map.entries()]
-      .sort((a,b)=> b[1]-a[1])
-      .slice(0, topN)
-      .map(([keyword,count])=>({keyword,count}));
-  }
-
-  function unique(arr){
-    return [...new Set(arr)];
-  }
-
-  // -------- Data Loading --------
-  async function loadVoc(){
-    showLoading(true);
-    try{
-      // cache bust
-      const url = './data/voc.json?v=' + Date.now();
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('voc.json が読み込めません: HTTP ' + res.status);
-      const data = await res.json();
-      if (!Array.isArray(data)) throw new Error('voc.json の形式が不正です（配列ではありません）');
-
-      // attach id
-      ALL = data.map((r, idx) => ({ id: idx + 1, ...r }));
-      FILTERED = ALL;
-
-      initializeUI();
-      renderAll();
-
-      showAlert('success', 'データを読み込みました: ' + ALL.length + '件');
-    } catch(e){
-      console.error(e);
-      showAlert('error', String(e.message || e));
-    } finally{
-      showLoading(false);
-    }
-  }
-
-  // -------- UI Init --------
-  function initializeUI(){
-    // filters options
-    const categories = unique(ALL.map(r => r["入電目的(大分類)"] || '不明')).sort();
-    const operators  = unique(ALL.map(r => r["オペレーター名"] || '不明')).sort();
-
-    const categoryFilter = document.getElementById('categoryFilter');
-    categoryFilter.innerHTML = `<option value="">すべて</option>` + categories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
-
-    const operatorFilter = document.getElementById('operatorFilter');
-    operatorFilter.innerHTML = `<option value="">すべて</option>` + operators.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
-
-    document.getElementById('applyFilters').onclick = () => {
-      applyFilters();
-      renderAll();
-    };
-    document.getElementById('clearFilters').onclick = () => {
-      document.getElementById('categoryFilter').value = '';
-      document.getElementById('riskFilter').value = '';
-      document.getElementById('operatorFilter').value = '';
-      FILTERED = ALL;
-      renderAll();
-    };
-
-    document.getElementById('refreshBtn').onclick = () => loadVoc();
-    document.getElementById('downloadJson').onclick = () => window.open('./data/voc.json', '_blank');
-    document.getElementById('downloadTsv').onclick = () => window.open('./data/voc.tsv', '_blank');
-  }
-
-  function applyFilters(){
-    const cat = document.getElementById('categoryFilter').value;
-    const risk = document.getElementById('riskFilter').value;
-    const op = document.getElementById('operatorFilter').value;
-
-    FILTERED = ALL.filter(r => {
-      if (cat && (r["入電目的(大分類)"] || '') !== cat) return false;
-      if (risk && (r["解約リスク判定"] || '') !== risk) return false;
-      if (op && (r["オペレーター名"] || '') !== op) return false;
-      return true;
-    });
-  }
-
-  // -------- Rendering --------
-  function renderAll(){
-    renderKpis();
-    renderCharts();
-    renderVocLists();
-    renderOperatorTab();
-  }
-
-  function renderKpis(){
-    document.getElementById('totalRecords').textContent = FILTERED.length.toLocaleString();
-
-    const high = FILTERED.filter(r => r["解約リスク判定"] === "高").length;
-    const rate = FILTERED.length ? (high / FILTERED.length * 100) : 0;
-    document.getElementById('highRiskRate').textContent = FILTERED.length ? (rate.toFixed(1) + "%") : "-";
-
-    const ops = unique(FILTERED.map(r => r["オペレーター名"] || "不明"));
-    document.getElementById('uniqueOperators').textContent = ops.length.toLocaleString();
-
-    // avg score across 4 dimensions
-    const scores = FILTERED.map(r => {
-      const a = safeNum(r["評価_Soft_点数"]);
-      const b = safeNum(r["評価_Hard基本_点数"]);
-      const c = safeNum(r["評価_Hard専門_点数"]);
-      const d = safeNum(r["評価_判断提案_点数"]);
-      return avg([a,b,c,d]);
-    });
-    document.getElementById('avgScoreAll').textContent = fmt(avg(scores), 2);
-  }
-
-  function destroyChart(ch){
-    if (ch) ch.destroy();
-  }
-
-  function renderCharts(){
-    // category chart
-    const catMap = new Map();
-    for (const r of FILTERED){
-      const k = r["入電目的(大分類)"] || "不明";
-      catMap.set(k, (catMap.get(k)||0) + 1);
-    }
-    const catLabels = [...catMap.keys()];
-    const catVals = catLabels.map(l => catMap.get(l));
-
-    destroyChart(charts.category);
-    charts.category = new Chart(document.getElementById('categoryChart'), {
-      type: 'doughnut',
-      data: {
-        labels: catLabels,
-        datasets: [{
-          data: catVals,
-          backgroundColor: ['#36A2EB','#4BC0C0','#FFCE56','#9966FF','#FF6384','#2ecc71','#e67e22','#9b59b6','#95a5a6','#1abc9c'],
-          borderWidth: 2,
-          borderColor: '#fff'
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { position: 'bottom', labels: { padding: 16, font: { size: 12 } } }
-        }
-      }
-    });
-
-    // keyword chart
-    const topKeywords = buildKeywordsTop(FILTERED, 10);
-    destroyChart(charts.keyword);
-    charts.keyword = new Chart(document.getElementById('keywordChart'), {
-      type: 'bar',
-      data: {
-        labels: topKeywords.map(k => k.keyword),
-        datasets: [{
-          label: '出現回数',
-          data: topKeywords.map(k => k.count),
-          backgroundColor: '#36A2EB',
-          borderColor: '#2E86AB',
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        scales: {
-          y: { beginAtZero: true, ticks: { stepSize: 10 } },
-          x: { ticks: { maxRotation: 45 } }
-        },
-        plugins: { legend: { display:false } }
-      }
-    });
-
-    // risk chart
-    const low = FILTERED.filter(r => r["解約リスク判定"] === "低").length;
-    const mid = FILTERED.filter(r => r["解約リスク判定"] === "中").length;
-    const high = FILTERED.filter(r => r["解約リスク判定"] === "高").length;
-
-    destroyChart(charts.risk);
-    charts.risk = new Chart(document.getElementById('riskChart'), {
-      type: 'bar',
-      data: {
-        labels: ['低','中','高'],
-        datasets: [{
-          label: '件数',
-          data: [low, mid, high],
-          backgroundColor: ['#4BC0C0','#FFCE56','#FF6384'],
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        scales: { y: { beginAtZero:true } },
-        plugins: { legend: { display:false } }
-      }
-    });
-  }
-
-  function renderVocLists(){
-    // list 1 (50)
-    const list = document.getElementById('vocList');
-    const items = FILTERED.slice(0, MAX_LIST);
-    if (!items.length){
-      list.innerHTML = `<div class="empty-state"><div class="empty-state-text">該当データがありません</div><div class="empty-state-hint">フィルター条件を変更してください</div></div>`;
-    } else {
-      list.innerHTML = items.map(r => vocItemHtml(r)).join('');
-    }
-
-    // list 2 (100)
-    const list2 = document.getElementById('vocList2');
-    const items2 = FILTERED.slice(0, MAX_LIST2);
-    if (!items2.length){
-      list2.innerHTML = `<div class="empty-state"><div class="empty-state-text">該当データがありません</div><div class="empty-state-hint">フィルター条件を変更してください</div></div>`;
-    } else {
-      list2.innerHTML = items2.map(r => vocItemHtml(r)).join('');
-    }
-  }
-
-  function vocItemHtml(r){
-    const title = `${r["通話日時"] || "日付不明"} / ${r["オペレーター名"] || "不明"} / ${r["入電目的(大分類)"] || "不明"}`;
-    const trigger = r["具体的課題(Trigger)"] || "";
-    const risk = r["解約リスク判定"] || "低";
-    const badgeClass = riskBadge(risk);
-    const meta1 = `契約: ${r["契約状況(推測)"] || "不明"}`;
-    const meta2 = `顧客属性: ${r["顧客属性(推定)"] || "不明"}`;
-    const meta3 = `Soft/HB/HP/提案: ${r["評価_Soft_点数"]||"-"}/${r["評価_Hard基本_点数"]||"-"}/${r["評価_Hard専門_点数"]||"-"}/${r["評価_判断提案_点数"]||"-"}`;
-
-    return `
-      <div class="voc-item" onclick="showVOCDetail(${r.id})">
-        <div class="voc-item-header">
-          <div class="voc-item-title">${escapeHtml(title)}</div>
-          <div class="voc-item-badges">
-            <span class="badge category">${escapeHtml(r["入電目的(大分類)"] || "不明")}</span>
-            <span class="badge ${badgeClass}">解約リスク: ${escapeHtml(risk)}</span>
-          </div>
-        </div>
-        <div class="voc-item-meta">
-          <span>${escapeHtml(meta1)}</span>
-          <span>${escapeHtml(meta2)}</span>
-          <span>${escapeHtml(meta3)}</span>
-        </div>
-        <div class="voc-item-keywords">要点: ${escapeHtml(trigger)}</div>
-      </div>
-    `;
-  }
-
-  function renderOperatorTab(){
-    // aggregate by operator
-    const byOp = new Map();
-    for (const r of FILTERED){
-      const op = r["オペレーター名"] || "不明";
-      if (!byOp.has(op)) byOp.set(op, []);
-      byOp.get(op).push(r);
-    }
-    const ops = [...byOp.keys()].sort();
-
-    document.getElementById('totalOperators').textContent = ops.length.toLocaleString();
-    document.getElementById('totalCases').textContent = FILTERED.length.toLocaleString();
-
-    // compute overall averages
-    const allSoft = avg(FILTERED.map(r => safeNum(r["評価_Soft_点数"])));
-    const allAvgScore = avg(FILTERED.map(r => avg([
-      safeNum(r["評価_Soft_点数"]),
-      safeNum(r["評価_Hard基本_点数"]),
-      safeNum(r["評価_Hard専門_点数"]),
-      safeNum(r["評価_判断提案_点数"])
-    ])));
-
-    document.getElementById('avgScoreOps').textContent = fmt(allAvgScore, 2);
-    document.getElementById('avgSoftOps').textContent = fmt(allSoft, 2);
-
-    // operator cards
-    const container = document.getElementById('operatorsList');
-    container.innerHTML = ops.map(op => {
-      const rs = byOp.get(op);
-      const avgScore = avg(rs.map(r => avg([
-        safeNum(r["評価_Soft_点数"]),
-        safeNum(r["評価_Hard基本_点数"]),
-        safeNum(r["評価_Hard専門_点数"]),
-        safeNum(r["評価_判断提案_点数"])
-      ])));
-      const soft = avg(rs.map(r => safeNum(r["評価_Soft_点数"])));
-      const hb = avg(rs.map(r => safeNum(r["評価_Hard基本_点数"])));
-      const hp = avg(rs.map(r => safeNum(r["評価_Hard専門_点数"])));
-      const pr = avg(rs.map(r => safeNum(r["評価_判断提案_点数"])));
-
-      const pct = avgScore ? Math.max(0, Math.min(100, (avgScore/5)*100)) : 0;
-
-      return `
-        <div class="operator-card" onclick="showOperatorDetail('${escapeHtml(op)}')">
-          <h3>${escapeHtml(op)}</h3>
-          <div class="operator-stats">
-            <div class="operator-stat"><div class="operator-stat-label">ケース数</div><div class="operator-stat-value">${rs.length}</div></div>
-            <div class="operator-stat"><div class="operator-stat-label">平均（総合）</div><div class="operator-stat-value">${fmt(avgScore,2)}</div></div>
-            <div class="operator-stat"><div class="operator-stat-label">Soft</div><div class="operator-stat-value">${fmt(soft,2)}</div></div>
-            <div class="operator-stat"><div class="operator-stat-label">Hard(基本)</div><div class="operator-stat-value">${fmt(hb,2)}</div></div>
-            <div class="operator-stat"><div class="operator-stat-label">Hard(専門)</div><div class="operator-stat-value">${fmt(hp,2)}</div></div>
-            <div class="operator-stat"><div class="operator-stat-label">判断提案</div><div class="operator-stat-value">${fmt(pr,2)}</div></div>
-          </div>
-          <div class="operator-score-bar"><div class="operator-score-fill" style="width:${pct}%"></div></div>
-        </div>
-      `;
-    }).join('');
-
-    // operator score chart (top 12 by avgScore)
-    const ranking = ops.map(op => {
-      const rs = byOp.get(op);
-      const avgScore = avg(rs.map(r => avg([
-        safeNum(r["評価_Soft_点数"]),
-        safeNum(r["評価_Hard基本_点数"]),
-        safeNum(r["評価_Hard専門_点数"]),
-        safeNum(r["評価_判断提案_点数"])
-      ])));
-      return { op, avgScore: avgScore || 0 };
-    }).sort((a,b)=> b.avgScore - a.avgScore).slice(0, 12);
-
-    if (document.getElementById('operatorScoreChart')){
-      if (charts.opScore) charts.opScore.destroy();
-      charts.opScore = new Chart(document.getElementById('operatorScoreChart'), {
-        type: 'bar',
-        data: {
-          labels: ranking.map(x=>x.op),
-          datasets: [{
-            label: '平均スコア',
-            data: ranking.map(x=>x.avgScore),
-            backgroundColor: '#667eea',
-            borderColor: '#667eea',
-            borderWidth: 2
-          }]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            y: { beginAtZero:true, max:5, ticks:{ stepSize:0.5 } }
-          },
-          plugins: { legend: { display:false } }
-        }
-      });
-    }
-  }
-
-  // -------- Modal --------
-  function showVOCDetail(vocId){
-    const r = FILTERED.find(x => x.id === vocId) || ALL.find(x => x.id === vocId);
-    if (!r) return;
-
-    document.getElementById('modalTitle').textContent = `VOC詳細 #${r.id}`;
-    const info = [
-      ["通話日時", r["通話日時"]],
-      ["オペレーター名", r["オペレーター名"]],
-      ["顧客属性(推定)", r["顧客属性(推定)"]],
-      ["契約状況(推測)", r["契約状況(推測)"]],
-      ["入電目的(大分類)", r["入電目的(大分類)"]],
-      ["解約リスク判定", r["解約リスク判定"]],
-      ["解約リスク判定_詳細", r["解約リスク判定_詳細"]],
-      ["具体的課題(Trigger)", r["具体的課題(Trigger)"]],
-      ["解決プロセス(Action)", r["解決プロセス(Action)"]],
-      ["ライフイベント・予兆", r["ライフイベント・予兆"]],
-      ["会話要約", r["会話要約"]],
-    ];
-
-    document.getElementById('modalBody').innerHTML = `
-      <div class="modal-info">
-        ${info.map(([k,v])=>`
-          <div class="modal-info-item">
-            <div class="modal-info-label">${escapeHtml(k)}</div>
-            <div class="modal-info-value">${escapeHtml(v ?? '-')}</div>
-          </div>
-        `).join('')}
-      </div>
-
-      <div class="modal-content-section">
-        <h3 style="font-size:18px;margin-bottom:10px;color:#333;">会話全文(整形済)</h3>
-        <div class="conversation">${escapeHtml(r["会話全文(整形済)"] || "")}</div>
-      </div>
-    `;
-    document.getElementById('vocModal').style.display = 'flex';
-  }
-
-  function closeModal(){
-    document.getElementById('vocModal').style.display = 'none';
-  }
-
-  window.onclick = function(event) {
-    const modal = document.getElementById('vocModal');
-    if (event.target === modal) modal.style.display = 'none';
-  }
-
-  // -------- Tabs --------
-  function showTab(tabName, ev){
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-
-    document.getElementById(tabName).classList.add('active');
-    if (ev && ev.target && ev.target.classList.contains('nav-tab')){
-      ev.target.classList.add('active');
-    } else {
-      // set nav active based on tabName
-      const map = { "dashboard":0, "voc-management":1, "operator":2 };
-      const idx = map[tabName];
-      const tabs = document.querySelectorAll('.nav-tab');
-      if (tabs[idx]) tabs[idx].classList.add('active');
-    }
-  }
-
-  function escapeHtml(s){
-    return String(s ?? '').replace(/[&<>"']/g, c => ({
-      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-    }[c]));
-  }
-
-  // -------- Boot --------
-  window.addEventListener('load', () => {
-    // fake load feeling
-    showLoading(true);
-    setTimeout(() => loadVoc(), 600);
-  });
-</script>
-</body>
-</html>
-
+Write-Host "DONE -> $OutDir\voc.tsv / voc.json ($Count records)"
