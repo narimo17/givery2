@@ -1,65 +1,170 @@
-﻿param([int]$Count=3000,[string]$OutDir=".\data",[int]$Seed=42)
-$ErrorActionPreference="Stop"
+﻿param(
+  [int]$Count = 3000,
+  [string]$OutDir = ".\data",
+  [int]$Seed = 42
+)
+
+$ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$rng=[Random]::new($Seed)
+$rng = [Random]::new($Seed)
 
-$Operators=@("岩里","篠原","不明","松本","Nishinetei Yuiki Hara","不明","松本","松本","小室","角屋","屋下","いわさ","不明","武田","川畑","中村","松本","山下","岩田","岩沙")
-$Purposes=@("障害/不具合（TV/NET/電話）","機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）","料金/請求","契約変更","解約","引越し","工事/訪問手配","営業案内","サービス案内","その他")
+# Operators: no "不明", no "Nishinetei Yuiki Hara", no weighting
+$Operators = @(
+  "岩里","篠原","松本","小室","角屋","屋下","いわさ","武田","川畑","中村","山下","岩田","岩沙"
+)
 
-$Header=@("通話日時","オペレーター名","顧客属性(推定)","契約状況(推測)","入電目的(大分類)","具体的課題(Trigger)","解決プロセス(Action)","ライフイベント・予兆","解約リスク判定","解約リスク判定_詳細","評価_Soft_点数","評価_Soft_内容","評価_Soft_根拠","評価_Hard基本_点数","評価_Hard基本_内容","評価_Hard基本_根拠","評価_Hard専門_点数","評価_Hard専門_内容","評価_Hard専門_根拠","評価_判断提案_点数","評価_判断提案_内容","評価_判断提案_根拠","会話要約","会話全文(整形済)")
+$Purposes = @(
+  "障害/不具合（TV/NET/電話）",
+  "機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）",
+  "料金/請求",
+  "契約変更",
+  "解約",
+  "引越し",
+  "工事/訪問手配",
+  "営業案内",
+  "サービス案内",
+  "その他"
+)
 
-$start=Get-Date "2023-01-01"; $end=Get-Date "2023-12-31"
-function Pick($a){ $a[$rng.Next(0,$a.Count)] }
+$Header = @(
+  "通話日時","オペレーター名","顧客属性(推定)","契約状況(推測)","入電目的(大分類)","具体的課題(Trigger)","解決プロセス(Action)",
+  "ライフイベント・予兆","解約リスク判定","解約リスク判定_詳細",
+  "評価_Soft_点数","評価_Soft_内容","評価_Soft_根拠",
+  "評価_Hard基本_点数","評価_Hard基本_内容","評価_Hard基本_根拠",
+  "評価_Hard専門_点数","評価_Hard専門_内容","評価_Hard専門_根拠",
+  "評価_判断提案_点数","評価_判断提案_内容","評価_判断提案_根拠",
+  "会話要約","会話全文(整形済)"
+)
+
+$start = Get-Date "2023-01-01"
+$end   = Get-Date "2023-12-31"
+
+function Pick($a){ $a[$rng.Next(0, $a.Count)] }
 function D([datetime]$d){ $d.ToString("yyyy年M月d日") }
+function Clamp([int]$x, [int]$min, [int]$max){ [Math]::Max($min, [Math]::Min($max, $x)) }
 
 $rows = New-Object System.Collections.Generic.List[object]
-for($i=0;$i -lt $Count;$i++){
-  $dt=$start.AddDays($rng.Next(0, ($end-$start).Days+1))
-  $op=Pick $Operators
-  $purpose=Pick $Purposes
-  $contract = if($purpose -in @("営業案内","サービス案内")){"既加入者"}else{ Pick @("既加入者","既加入者","不明") }
-  $attr = Pick @("不明","不明","既加入者")
-  $risk = if($purpose -eq "解約"){"高"}elseif($purpose -eq "料金/請求" -and $rng.Next(0,100) -lt 25){"中"}else{"低"}
-  $riskD = if($risk -eq "高"){"顧客から解約意向の発言あり"}elseif($risk -eq "中"){"料金見直し・他社比較の示唆"}else{"顧客からの解約に関する発言なし"}
 
-  $soft=2+$rng.Next(0,4); $hb=2+$rng.Next(0,4); $hp=1+$rng.Next(0,5); $prop=2+$rng.Next(0,4)
+for($i=0; $i -lt $Count; $i++){
+  $dt = $start.AddDays($rng.Next(0, ($end-$start).Days + 1))
+  $op = Pick $Operators
+  $purpose = Pick $Purposes
+
+  $contract = if ($purpose -in @("営業案内","サービス案内")) { "既加入者" } else { Pick @("既加入者","既加入者","不明") }
+  $attr = Pick @("既加入者","不明","不明")
+
+  $risk = if ($purpose -eq "解約") { "高" }
+          elseif ($purpose -eq "料金/請求" -and $rng.Next(0,100) -lt 25) { "中" }
+          else { "低" }
+
+  $riskD = if ($risk -eq "高") { "顧客から解約意向の発言あり（ダミー）" }
+           elseif ($risk -eq "中") { "料金見直し・他社比較の示唆（ダミー）" }
+           else { "顧客からの解約に関する発言なし（ダミー）" }
+
+  $soft = Clamp (2 + $rng.Next(0,4)) 1 5
+  $hb   = Clamp (2 + $rng.Next(0,4)) 1 5
+  $hp   = Clamp (1 + $rng.Next(0,5)) 1 5
+  $prop = Clamp (2 + $rng.Next(0,4)) 1 5
+
   $trigger = switch($purpose){
-    "障害/不具合（TV/NET/電話）" {"ネット不通/TV視聴不良の相談"}
-    "機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）" {"Wi‑Fi/機器設定の相談"}
-    "料金/請求" {"請求内訳の確認"}
-    "契約変更" {"プラン/オプション変更相談"}
-    "解約" {"解約手続き相談"}
-    "引越し" {"移転手続き相談"}
-    "工事/訪問手配" {"訪問サポート依頼"}
-    "営業案内" {"セット割/モバイル案内"}
-    "サービス案内" {"サービスのご案内のための連絡"}
-    default {"その他問い合わせ"}
+    "障害/不具合（TV/NET/電話）" { Pick @("インターネットが繋がらない","テレビが映らない","速度が遅い","電話が繋がらない") }
+    "機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）" { Pick @("Wi‑Fiが不安定","ルータ設定の相談","STB操作案内","リモコン操作案内","メール設定の相談") }
+    "料金/請求" { Pick @("請求金額の内訳確認","料金見直しの相談","支払い方法の確認") }
+    "契約変更" { Pick @("プラン/オプション変更の相談","名義変更の相談","契約内容の確認") }
+    "解約" { Pick @("解約手続きの相談","解約に伴う撤去の確認") }
+    "引越し" { Pick @("引越しに伴う移転手続き","移転工事日の相談") }
+    "工事/訪問手配" { Pick @("訪問サポートの依頼","宅内確認の訪問希望") }
+    "営業案内" { "新プランの案内と訪問提案" }
+    "サービス案内" { "サービスのご案内のための連絡" }
+    default { "その他問い合わせ" }
   }
-  $action = if($purpose -in @("営業案内","サービス案内")){"電話完結"}else{"要件確認→案内→終話"}
-  $life = if($purpose -in @("解約","引越し")){"引越し/費用見直し"}elseif($purpose -eq "料金/請求"){"家計見直し"}else{"特になし"}
 
-  $summary="オペレーターの$opが$contractの顧客に対して$trigger。対応は$action。解約リスクは$risk。"
-  $conv="OP: お世話になります。愛媛ケーブルテレビの$opです。 CU: はい。 OP: $trigger の件でご案内します。 CU: はい。 OP: $action。 CU: わかりました。"
+  $action = switch($purpose){
+    "障害/不具合（TV/NET/電話）" { "要件確認→機器再起動案内→ランプ/配線確認→復旧確認" }
+    "機器/設定サポート（Wi‑Fi/メール/リモコン/STB等）" { "要件確認→設定/操作案内→改善策提示→終了" }
+    "料金/請求" { "契約内訳確認→料金説明→次回請求の見込み案内" }
+    "契約変更" { "要望確認→注意事項案内→手続き方法案内" }
+    "解約" { "理由ヒアリング→違約金/撤去説明→手続き案内" }
+    "引越し" { "住所/希望日確認→工事可否案内→手続き案内" }
+    "工事/訪問手配" { "症状確認→訪問可否→希望日調整→注意事項案内" }
+    "営業案内" { "案内→料金目安提示→訪問提案→検討/辞退で終話" }
+    "サービス案内" { "案内→許諾確認→短時間説明→終了" }
+    default { "要件確認→案内→終了" }
+  }
 
-  $o=[ordered]@{}
-  $o["通話日時"]=D $dt; $o["オペレーター名"]=$op; $o["顧客属性(推定)"]=$attr; $o["契約状況(推測)"]=$contract
-  $o["入電目的(大分類)"]=$purpose; $o["具体的課題(Trigger)"]=$trigger; $o["解決プロセス(Action)"]=$action
-  $o["ライフイベント・予兆"]=$life; $o["解約リスク判定"]=$risk; $o["解約リスク判定_詳細"]=$riskD
-  $o["評価_Soft_点数"]=$soft; $o["評価_Soft_内容"]="丁寧な対応（ダミー）"; $o["評価_Soft_根拠"]="お世話になります／ありがとうございます（ダミー）"
-  $o["評価_Hard基本_点数"]=$hb; $o["評価_Hard基本_内容"]="基本案内（ダミー）"; $o["評価_Hard基本_根拠"]="要件確認の発話（ダミー）"
-  $o["評価_Hard専門_点数"]=$hp; $o["評価_Hard専門_内容"]="専門案内（ダミー）"; $o["評価_Hard専門_根拠"]="切り分け/手続き（ダミー）"
-  $o["評価_判断提案_点数"]=$prop; $o["評価_判断提案_内容"]="次アクション提示（ダミー）"; $o["評価_判断提案_根拠"]="希望日確認/折返し（ダミー）"
-  $o["会話要約"]=$summary; $o["会話全文(整形済)"]=$conv
+  $life = switch($purpose){
+    "引越し" { "引越し予定" }
+    "解約" { "費用見直し/転居の可能性" }
+    "料金/請求" { "家計見直し" }
+    "営業案内" { "通信費の見直し" }
+    default { "特になし" }
+  }
+
+  $softText = if ($soft -ge 4) { "丁寧な対応と説明（ダミー）" } elseif ($soft -eq 3) { "丁寧だが柔軟性が不足（ダミー）" } else { "傾聴・配慮が不足（ダミー）" }
+  $hbText   = if ($hb -ge 4) { "要件整理と案内が明確（ダミー）" } elseif ($hb -eq 3) { "基本案内はできているが深掘り不足（ダミー）" } else { "確認不足で案内が不十分（ダミー）" }
+  $hpText   = if ($hp -ge 4) { "切り分け/手続きの専門案内が適切（ダミー）" } elseif ($hp -eq 3) { "基本知識はあるが最適化不足（ダミー）" } else { "専門的な案内が不足（ダミー）" }
+  $propText = if ($prop -ge 4) { "次アクション提示が適切（ダミー）" } elseif ($prop -eq 3) { "判断は標準だが改善余地（ダミー）" } else { "提案・判断が弱い（ダミー）" }
+
+  $softEv = "OP: お世話になります。ありがとうございます。（ダミー）"
+  $hbEv   = "OP: 要件を確認します。（ダミー）"
+  $hpEv   = "OP: 手順をご案内します。（ダミー）"
+  $propEv = "OP: 次の対応をご案内します。（ダミー）"
+
+  $summary = "オペレーターの$opが$contractの顧客に対して「$trigger」の要件で対応。$action。解約リスクは$risk。"
+
+  $conv = @(
+    "OP: お世話になります。愛媛ケーブルテレビの$opです。",
+    "CU: はい。",
+    "OP: 本日は「$trigger」の件でご案内します。",
+    "CU: はい。",
+    "OP: $action。",
+    "CU: わかりました。"
+  ) -join " "
+
+  $o = [ordered]@{}
+  $o["通話日時"] = D $dt
+  $o["オペレーター名"] = $op
+  $o["顧客属性(推定)"] = $attr
+  $o["契約状況(推測)"] = $contract
+  $o["入電目的(大分類)"] = $purpose
+  $o["具体的課題(Trigger)"] = $trigger
+  $o["解決プロセス(Action)"] = if ($purpose -in @("営業案内","サービス案内")) { "電話完結" } else { $action }
+  $o["ライフイベント・予兆"] = $life
+  $o["解約リスク判定"] = $risk
+  $o["解約リスク判定_詳細"] = $riskD
+
+  $o["評価_Soft_点数"] = $soft
+  $o["評価_Soft_内容"] = $softText
+  $o["評価_Soft_根拠"] = $softEv
+
+  $o["評価_Hard基本_点数"] = $hb
+  $o["評価_Hard基本_内容"] = $hbText
+  $o["評価_Hard基本_根拠"] = $hbEv
+
+  $o["評価_Hard専門_点数"] = $hp
+  $o["評価_Hard専門_内容"] = $hpText
+  $o["評価_Hard専門_根拠"] = $hpEv
+
+  $o["評価_判断提案_点数"] = $prop
+  $o["評価_判断提案_内容"] = $propText
+  $o["評価_判断提案_根拠"] = $propEv
+
+  $o["会話要約"] = $summary
+  $o["会話全文(整形済)"] = $conv
+
   $rows.Add([pscustomobject]$o) | Out-Null
 }
 
 # TSV
-$tsv=Join-Path $OutDir "voc.tsv"
+$tsv = Join-Path $OutDir "voc.tsv"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$sb=New-Object System.Text.StringBuilder
+$sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine(($Header -join "`t"))
 foreach($r in $rows){
-  $vals = foreach($h in $Header){ ([string]$r.$h).Replace("`t"," ").Replace("`r"," ").Replace("`n"," ") }
+  $vals = foreach($h in $Header){
+    $v = [string]$r.$h
+    $v.Replace("`t"," ").Replace("`r"," ").Replace("`n"," ")
+  }
   [void]$sb.AppendLine(($vals -join "`t"))
 }
 [IO.File]::WriteAllText($tsv, $sb.ToString(), $utf8NoBom)
@@ -68,3 +173,4 @@ foreach($r in $rows){
 $rows | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutDir "voc.json") -Encoding UTF8
 
 Write-Host "DONE -> $OutDir\voc.tsv / voc.json"
+
